@@ -53,7 +53,6 @@ section[data-testid="stSidebar"] { min-width: 340px; }
 # ──────────────────────────────────────
 
 def _extract_url_from_filename(name: str) -> str:
-    """SCエクスポートのファイル名からサイトURLを抽出する"""
     stem = re.sub(r'\.(xlsx|csv)$', '', name, flags=re.IGNORECASE)
     m = re.match(r'^(https?___[^_]+(?:_[^-][^_]*)*?)(?=_-|$)', stem)
     if m:
@@ -61,105 +60,244 @@ def _extract_url_from_filename(name: str) -> str:
     return ""
 
 
-def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
-    """診断結果をExcel形式で生成する"""
-    wb = Workbook()
-
-    # ── スタイル定義 ──
-    hdr_font  = Font(bold=True, color="FFFFFF", size=11)
+def _apply_header(ws, headers, col_widths, row=1):
+    hdr_font  = Font(bold=True, color="FFFFFF", size=10)
     hdr_fill  = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
     hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    thin      = Border(
+    thin = Border(
         left=Side(style="thin"), right=Side(style="thin"),
         top=Side(style="thin"),  bottom=Side(style="thin"),
     )
-    wrap = Alignment(wrap_text=True, vertical="top")
-
-    # ════════════════════════════════════
-    # シート①：概況
-    # ════════════════════════════════════
-    ws1 = wb.active
-    ws1.title = "概況"
-
-    ws1.column_dimensions["A"].width = 22
-    ws1.column_dimensions["B"].width = 20
-
-    ws1["A1"] = "SEO診断レポート"
-    ws1["A1"].font = Font(bold=True, size=14)
-    ws1.merge_cells("A1:B1")
-
-    rows = [
-        ("サイトURL",       site_url),
-        ("診断日時",        datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("分析キーワード数", f"{analysis['total_kw']:,} 件"),
-        ("総クリック数",    f"{analysis['total_clicks']:,}"),
-        ("総表示回数",      f"{analysis['total_impressions']:,}"),
-        ("全体CTR",         f"{analysis['avg_ctr']:.1%}"),
-        ("加重平均順位",    f"{analysis['avg_position']:.1f} 位"),
-    ]
-    for i, (label, val) in enumerate(rows, start=3):
-        ws1[f"A{i}"] = label
-        ws1[f"A{i}"].font = Font(bold=True)
-        ws1[f"B{i}"] = val
-
-    ws1["A11"] = "順位帯分布"
-    ws1["A11"].font = Font(bold=True)
-    for j, (label, cnt) in enumerate(analysis["pos_distribution"].items(), start=12):
-        ws1[f"A{j}"] = label
-        ws1[f"B{j}"] = f"{cnt} 件"
-
-    # ════════════════════════════════════
-    # シート②：改善処方箋
-    # ════════════════════════════════════
-    ws2 = wb.create_sheet("改善処方箋")
-    ws2.column_dimensions["A"].width = 100
-    ws2.row_dimensions[1].height = 24
-
-    ws2["A1"] = "改善処方箋（AI生成）"
-    ws2["A1"].font = Font(bold=True, size=13)
-
-    # Markdownを除去してプレーンテキストで格納
-    plain = re.sub(r'\*{1,3}([^\*]+)\*{1,3}', r'\1', prescription)
-    plain = re.sub(r'^#{1,6}\s*', '', plain, flags=re.MULTILINE)
-    plain = re.sub(r'^---+$', '─' * 40, plain, flags=re.MULTILINE)
-
-    ws2["A2"] = plain
-    ws2["A2"].alignment = wrap
-    ws2.row_dimensions[2].height = max(400, plain.count('\n') * 15)
-
-    # ════════════════════════════════════
-    # シート③：改善対象キーワード
-    # ════════════════════════════════════
-    ws3 = wb.create_sheet("改善対象キーワード")
-
-    headers = ["#", "キーワード", "順位", "表示回数", "クリック数", "CTR", "CTR評価"]
-    col_widths = [5, 40, 8, 12, 12, 10, 14]
-
     for col, (h, w) in enumerate(zip(headers, col_widths), start=1):
-        cell = ws3.cell(row=1, column=col, value=h)
+        cell = ws.cell(row=row, column=col, value=h)
         cell.font = hdr_font
         cell.fill = hdr_fill
         cell.alignment = hdr_align
         cell.border = thin
-        ws3.column_dimensions[get_column_letter(col)].width = w
+        ws.column_dimensions[get_column_letter(col)].width = w
+    ws.row_dimensions[row].height = 28
 
-    for i, kw in enumerate(analysis["top_keywords"], start=1):
-        row = i + 1
-        values = [
-            i,
-            kw["query"],
+
+def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
+    wb = Workbook()
+    thin = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"),  bottom=Side(style="thin"),
+    )
+    cell_align = Alignment(vertical="center", wrap_text=False)
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # ════════════════════════════════
+    # シート①：概要
+    # ════════════════════════════════
+    ws_summary = wb.active
+    ws_summary.title = "概要"
+    ws_summary.column_dimensions["A"].width = 24
+    ws_summary.column_dimensions["B"].width = 30
+
+    ws_summary["A1"] = f"SEO Doctor 診断概要 — {site_url}"
+    ws_summary["A1"].font = Font(bold=True, size=13)
+    ws_summary.merge_cells("A1:B1")
+    ws_summary.row_dimensions[1].height = 22
+
+    info_rows = [
+        ("■ 基本情報", ""),
+        ("対象サイト", site_url),
+        ("診断モード", "ワンクリック診断（Search Console）"),
+        ("実行日時", now_str),
+        ("SC分析期間", "エクスポート期間（通常3か月）"),
+        ("", ""),
+        ("■ 検出件数", ""),
+        ("分析キーワード数", f"{analysis['total_kw']:,} 件"),
+        ("リライト候補", f"{sum(1 for k in analysis['all_keywords'] if k['position'] <= 20):,} 件（1〜20位）"),
+        ("新規記事提案", f"{sum(1 for k in analysis['all_keywords'] if 20 < k['position'] <= 50):,} 件（21〜50位）"),
+        ("", ""),
+        ("■ パフォーマンス概況", ""),
+        ("総クリック数", f"{analysis['total_clicks']:,}"),
+        ("総表示回数", f"{analysis['total_impressions']:,}"),
+        ("全体CTR", f"{analysis['avg_ctr']:.1%}"),
+        ("加重平均掲載順位", f"{analysis['avg_position']:.1f} 位"),
+        ("", ""),
+        ("■ 順位帯分布", ""),
+    ]
+    for i, (lbl, val) in enumerate(info_rows, start=2):
+        ws_summary[f"A{i}"] = lbl
+        ws_summary[f"B{i}"] = val
+        if lbl.startswith("■"):
+            ws_summary[f"A{i}"].font = Font(bold=True, color="2F5496")
+
+    row = len(info_rows) + 2
+    for label, cnt in analysis["pos_distribution"].items():
+        ws_summary[f"A{row}"] = label
+        ws_summary[f"B{row}"] = f"{cnt} 件"
+        row += 1
+
+    row += 1
+    ws_summary[f"A{row}"] = "※ 各タブを順番に確認してください。まず「📋処方箋」→「① リライト候補」→「② 新規記事提案」の順で取り組んでください。"
+    ws_summary[f"A{row}"].font = Font(italic=True, color="666666", size=9)
+    ws_summary.merge_cells(f"A{row}:B{row}")
+
+    # ════════════════════════════════
+    # シート②：使い方
+    # ════════════════════════════════
+    ws_howto = wb.create_sheet("使い方")
+    ws_howto.column_dimensions["A"].width = 90
+    howto_lines = [
+        f"SEO Doctor — {site_url}",
+        "",
+        "【このファイルの使い方】",
+        "",
+        "■ 📋処方箋タブ",
+        "  AIが生成した改善処方箋です。優先度の高い順に並んでいます。",
+        "  「着手状況」列をプルダウンで「対応中」「対応済み」に変更しながら進めてください。",
+        "",
+        "■ ① リライト候補タブ",
+        "  現在1〜20位に表示されているキーワードのうち、改善余地の大きいものを優先順で並べています。",
+        "  CTR差分がマイナス（平均より低い）ほど、タイトル・メタディスクリプションの改善効果が期待できます。",
+        "",
+        "■ ② 新規記事提案タブ",
+        "  21〜50位のキーワードです。1ページ目に引き上げるための新規記事や既存記事の強化候補です。",
+        "  表示回数が多いほど、記事を書いた際のインパクトが大きくなります。",
+        "",
+        "【Google スプレッドシートで開く方法】",
+        "  1. Google ドライブを開く（drive.google.com）",
+        "  2. このファイルをドラッグ＆ドロップでアップロード",
+        "  3. ファイルをダブルクリック → 「Googleスプレッドシートで開く」",
+        "",
+        "※ この診断書はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。",
+        f"※ 生成日時: {now_str}",
+    ]
+    for i, line in enumerate(howto_lines, start=1):
+        ws_howto[f"A{i}"] = line
+        if line.startswith("■") or line.startswith("【"):
+            ws_howto[f"A{i}"].font = Font(bold=True)
+    ws_howto[f"A1"].font = Font(bold=True, size=13)
+
+    # ════════════════════════════════
+    # シート③：処方箋
+    # ════════════════════════════════
+    ws_rx = wb.create_sheet("📋処方箋")
+    ws_rx.column_dimensions["A"].width = 12
+    ws_rx.column_dimensions["B"].width = 90
+
+    ws_rx["A1"] = "着手状況"
+    ws_rx["A1"].font = Font(bold=True, color="FFFFFF")
+    ws_rx["A1"].fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+    ws_rx["A1"].alignment = Alignment(horizontal="center")
+    ws_rx["B1"] = "AI改善処方箋（Gemini生成）"
+    ws_rx["B1"].font = Font(bold=True, color="FFFFFF")
+    ws_rx["B1"].fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+    ws_rx.row_dimensions[1].height = 24
+
+    # Markdownを除去してプレーンテキストに
+    plain = re.sub(r'\*{1,3}([^\*]+)\*{1,3}', r'\1', prescription)
+    plain = re.sub(r'^#{1,6}\s*', '', plain, flags=re.MULTILINE)
+    plain = re.sub(r'^---+$', '─' * 60, plain, flags=re.MULTILINE)
+
+    # セクションごとに行分割して書き込む
+    sections = plain.split('\n')
+    data_row = 2
+
+    level_fills = {
+        "🔴": PatternFill(start_color="FFE0E0", end_color="FFE0E0", fill_type="solid"),
+        "🟡": PatternFill(start_color="FFFDE0", end_color="FFFDE0", fill_type="solid"),
+        "🟢": PatternFill(start_color="E0FFE8", end_color="E0FFE8", fill_type="solid"),
+        "💡": PatternFill(start_color="E0F0FF", end_color="E0F0FF", fill_type="solid"),
+    }
+
+    current_fill = None
+    for line in sections:
+        if not line.strip():
+            continue
+        for emoji, fill in level_fills.items():
+            if emoji in line:
+                current_fill = fill
+                break
+        ws_rx.cell(row=data_row, column=1, value="未着手")
+        ws_rx.cell(row=data_row, column=1).alignment = Alignment(horizontal="center", vertical="top")
+        cell = ws_rx.cell(row=data_row, column=2, value=line.strip())
+        cell.alignment = wrap_align
+        if current_fill:
+            ws_rx.cell(row=data_row, column=1).fill = current_fill
+            cell.fill = current_fill
+        ws_rx.row_dimensions[data_row].height = max(15, len(line) // 8 * 13)
+        data_row += 1
+
+    ws_rx.freeze_panes = "A2"
+
+    # ════════════════════════════════
+    # シート④：リライト候補（1〜20位）
+    # ════════════════════════════════
+    ws_rw = wb.create_sheet("① リライト候補")
+
+    rw_headers = [
+        "着手状況", "順位", "クエリ", "表示回数", "クリック数",
+        "CTR", "サイト平均CTR", "CTR差分", "CTR評価", "順位帯診断",
+    ]
+    rw_widths = [12, 8, 40, 12, 12, 10, 14, 12, 14, 22]
+    _apply_header(ws_rw, rw_headers, rw_widths)
+
+    rw_data = [k for k in analysis["all_keywords"] if k["position"] <= 20]
+    low_fill  = PatternFill(start_color="FFE0E0", end_color="FFE0E0", fill_type="solid")
+    mid_fill  = PatternFill(start_color="FFFDE0", end_color="FFFDE0", fill_type="solid")
+
+    for i, kw in enumerate(rw_data, start=2):
+        row_vals = [
+            "未着手",
             kw["position"],
+            kw["query"],
             kw["impressions"],
             kw["clicks"],
             kw["ctr_pct"],
+            kw["avg_ctr_pct"],
+            kw["ctr_diff_pct"],
             kw["ctr_status"],
+            kw["pos_band"],
         ]
-        for col, val in enumerate(values, start=1):
-            cell = ws3.cell(row=row, column=col, value=val)
+        fill = low_fill if kw["ctr_status"] == "かなり低め" else (
+               mid_fill if kw["ctr_status"] == "やや低め" else None)
+        for col, val in enumerate(row_vals, start=1):
+            cell = ws_rw.cell(row=i, column=col, value=val)
             cell.border = thin
-            cell.alignment = Alignment(vertical="center")
+            cell.alignment = cell_align
+            if fill and col in (6, 7, 8, 9):
+                cell.fill = fill
 
-    ws3.freeze_panes = "A2"
+    ws_rw.freeze_panes = "A2"
+
+    # ════════════════════════════════
+    # シート⑤：新規記事提案（21〜50位）
+    # ════════════════════════════════
+    ws_new = wb.create_sheet("② 新規記事提案")
+
+    new_headers = [
+        "着手状況", "順位", "クエリ", "表示回数", "クリック数",
+        "CTR", "サイト平均CTR", "CTR差分", "CTR評価", "順位帯診断",
+    ]
+    new_widths = [12, 8, 40, 12, 12, 10, 14, 12, 14, 22]
+    _apply_header(ws_new, new_headers, new_widths)
+
+    new_data = [k for k in analysis["all_keywords"] if 20 < k["position"] <= 50]
+    for i, kw in enumerate(new_data, start=2):
+        row_vals = [
+            "未着手",
+            kw["position"],
+            kw["query"],
+            kw["impressions"],
+            kw["clicks"],
+            kw["ctr_pct"],
+            kw["avg_ctr_pct"],
+            kw["ctr_diff_pct"],
+            kw["ctr_status"],
+            kw["pos_band"],
+        ]
+        for col, val in enumerate(row_vals, start=1):
+            cell = ws_new.cell(row=i, column=col, value=val)
+            cell.border = thin
+            cell.alignment = cell_align
+
+    ws_new.freeze_panes = "A2"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -167,7 +305,6 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
 
 
 def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
-    """診断結果をHTML形式で生成する"""
     import html as html_mod
 
     dist_rows = "".join(
@@ -179,19 +316,17 @@ def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
         f"<tr><td>{i}</td><td>{html_mod.escape(kw['query'])}</td>"
         f"<td>{kw['position']}</td><td>{kw['impressions']:,}</td>"
         f"<td>{kw['clicks']}</td><td>{kw['ctr_pct']}</td>"
-        f"<td>{kw['ctr_status']}</td></tr>"
-        for i, kw in enumerate(analysis["top_keywords"], 1)
+        f"<td>{kw['ctr_diff_pct']}</td><td>{kw['ctr_status']}</td></tr>"
+        for i, kw in enumerate(analysis["all_keywords"][:50], 1)
     )
 
-    # MarkdownをHTMLに簡易変換
-    import re as _re
     md = prescription
-    md = _re.sub(r'^## (.+)$', r'<h2>\1</h2>', md, flags=_re.MULTILINE)
-    md = _re.sub(r'^### (.+)$', r'<h3>\1</h3>', md, flags=_re.MULTILINE)
-    md = _re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', md)
-    md = _re.sub(r'\*(.+?)\*', r'<em>\1</em>', md)
-    md = _re.sub(r'^---+$', '<hr>', md, flags=_re.MULTILINE)
-    md = _re.sub(r'^\*   (.+)$', r'<li>\1</li>', md, flags=_re.MULTILINE)
+    md = re.sub(r'^## (.+)$', r'<h2>\1</h2>', md, flags=re.MULTILINE)
+    md = re.sub(r'^### (.+)$', r'<h3>\1</h3>', md, flags=re.MULTILINE)
+    md = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', md)
+    md = re.sub(r'\*(.+?)\*', r'<em>\1</em>', md)
+    md = re.sub(r'^---+$', '<hr>', md, flags=re.MULTILINE)
+    md = re.sub(r'^\*   (.+)$', r'<li>\1</li>', md, flags=re.MULTILINE)
     md = md.replace('\n', '<br>\n')
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -202,19 +337,19 @@ def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SEO診断レポート — {html_mod.escape(site_url)}</title>
 <style>
-  body {{ font-family: 'Hiragino Sans', 'Meiryo', sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; color: #222; }}
-  h1 {{ color: #2F5496; border-bottom: 2px solid #2F5496; padding-bottom: 8px; }}
-  h2 {{ color: #c0392b; margin-top: 32px; }}
+  body {{ font-family: 'Hiragino Sans', 'Meiryo', sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; color: #222; }}
+  h1 {{ color: #2F5496; border-bottom: 3px solid #2F5496; padding-bottom: 8px; }}
+  h2 {{ color: #c0392b; margin-top: 36px; border-left: 4px solid #c0392b; padding-left: 10px; }}
   h3 {{ color: #2980b9; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 0.9em; }}
   th {{ background: #2F5496; color: #fff; padding: 8px 12px; text-align: left; }}
-  td {{ border: 1px solid #ddd; padding: 6px 12px; }}
+  td {{ border: 1px solid #ddd; padding: 6px 10px; }}
   tr:nth-child(even) {{ background: #f5f8ff; }}
   .summary-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }}
   .metric {{ background: #f0f4ff; border-radius: 8px; padding: 12px; text-align: center; }}
   .metric-value {{ font-size: 1.6em; font-weight: bold; color: #2F5496; }}
   .metric-label {{ font-size: 0.82em; color: #666; }}
-  .prescription {{ background: #fff9f0; border-left: 4px solid #e67e22; padding: 16px 24px; border-radius: 4px; }}
+  .prescription {{ background: #fff9f0; border-left: 4px solid #e67e22; padding: 16px 24px; border-radius: 4px; line-height: 1.8; }}
   .footer {{ font-size: 0.8em; color: #999; margin-top: 40px; border-top: 1px solid #eee; padding-top: 12px; }}
 </style>
 </head>
@@ -236,13 +371,16 @@ def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
 <h2>💊 改善処方箋</h2>
 <div class="prescription">{md}</div>
 
-<h2>📋 改善対象キーワード一覧</h2>
+<h2>📋 改善対象キーワード一覧（上位50件）</h2>
 <table>
-  <tr><th>#</th><th>キーワード</th><th>順位</th><th>表示回数</th><th>クリック数</th><th>CTR</th><th>CTR評価</th></tr>
+  <tr><th>#</th><th>キーワード</th><th>順位</th><th>表示回数</th><th>クリック数</th><th>CTR</th><th>CTR差分</th><th>CTR評価</th></tr>
   {kw_rows}
 </table>
 
-<div class="footer">※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。</div>
+<div class="footer">
+  ※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。<br>
+  ※ Excelファイルはリライト候補・新規記事提案の全キーワードを含んでいます。
+</div>
 </body>
 </html>"""
 
@@ -297,7 +435,6 @@ with st.sidebar:
 5. **「Excelとしてダウンロード」** または **「CSVをダウンロード」** を選択
 
 > ✅ Excel (.xlsx) と CSV (.csv) の両方に対応しています
-> ✅ Googleスプレッドシートで開いた場合は「ファイル→ダウンロード→CSV」でエクスポートしてください
 """)
 
 
@@ -316,7 +453,6 @@ with col_upload:
         "📂 Search Consoleファイルをアップロード",
         type=["csv", "xlsx"],
         help="Excel (.xlsx) または CSV (.csv) に対応しています",
-        label_visibility="visible",
     )
     if uploaded_file:
         st.caption(f"✅ ファイル受信: {uploaded_file.name}")
@@ -340,7 +476,6 @@ ready = uploaded_file is not None and bool(gemini_api_key)
 if ready:
     if st.button("🔍 診断を開始する", type="primary", use_container_width=True):
 
-        # 1. ファイル解析
         with st.spinner("📊 ファイルを解析中..."):
             df, error_msg = parse_sc_file(uploaded_file)
 
@@ -349,35 +484,12 @@ if ready:
             st.stop()
 
         if df is None or df.empty:
-            st.error(
-                "❌ データが空でした。\n\n"
-                "Search Console の「検索パフォーマンス」→「検索結果」画面で"
-                "エクスポートしたファイルを使用してください。"
-            )
+            st.error("❌ データが空でした。Search Console の「検索パフォーマンス」でエクスポートしたファイルを使用してください。")
             st.stop()
 
-        # 2. データ分析
         with st.spinner("🔬 データを分析中..."):
             analysis = analyze_sc_data(df)
 
-        # 概況表示
-        st.subheader("📊 サイト概況")
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("分析キーワード数",  f"{analysis['total_kw']:,} 件")
-        m2.metric("平均掲載順位",      f"{analysis['avg_position']:.1f} 位")
-        m3.metric("全体CTR",           f"{analysis['avg_ctr']:.1%}")
-        m4.metric("総クリック数",      f"{analysis['total_clicks']:,}")
-
-        with st.expander("順位帯の内訳を見る"):
-            dist = analysis["pos_distribution"]
-            cols = st.columns(len(dist))
-            for col, (label, count) in zip(cols, dist.items()):
-                col.metric(label, f"{count} 件")
-
-        st.divider()
-
-        # 3. AI処方箋生成
         with st.spinner("💊 AIが処方箋を作成中です...（30秒〜1分かかります）"):
             prescription = generate_prescription(
                 api_key=gemini_api_key,
@@ -385,43 +497,70 @@ if ready:
                 site_url=site_url or "（URL未入力）",
             )
 
-        st.subheader("💊 改善処方箋")
-        st.markdown(prescription)
+        # session_stateに保存（ダウンロードボタンが消えないようにするため）
+        st.session_state["analysis"]     = analysis
+        st.session_state["prescription"] = prescription
+        st.session_state["site_url"]     = site_url or "（URL未入力）"
 
-        st.divider()
+# ──────────────────────────────────────
+# 診断結果の表示（session_stateから読む）
+# ──────────────────────────────────────
+if "prescription" in st.session_state:
+    analysis     = st.session_state["analysis"]
+    prescription = st.session_state["prescription"]
+    display_url  = st.session_state["site_url"]
 
-        # ダウンロードボタン群
-        display_url = site_url or "seo_report"
-        safe_url = re.sub(r'[^a-zA-Z0-9._-]', '_', display_url)
-        date_str = datetime.now().strftime("%Y%m%d")
-        base_name = f"seo_report_{safe_url}_{date_str}"
+    st.subheader("📊 サイト概況")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("分析キーワード数",  f"{analysis['total_kw']:,} 件")
+    m2.metric("平均掲載順位",      f"{analysis['avg_position']:.1f} 位")
+    m3.metric("全体CTR",           f"{analysis['avg_ctr']:.1%}")
+    m4.metric("総クリック数",      f"{analysis['total_clicks']:,}")
 
-        dl1, dl2 = st.columns(2)
+    with st.expander("順位帯の内訳を見る"):
+        dist = analysis["pos_distribution"]
+        cols = st.columns(len(dist))
+        for col, (label, count) in zip(cols, dist.items()):
+            col.metric(label, f"{count} 件")
 
-        with dl1:
-            excel_bytes = _build_excel(analysis, prescription, site_url or "（URL未入力）")
-            st.download_button(
-                label="📊 Excelでダウンロード",
-                data=excel_bytes,
-                file_name=f"{base_name}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+    st.divider()
 
-        with dl2:
-            html_bytes = _build_html(analysis, prescription, site_url or "（URL未入力）").encode("utf-8")
-            st.download_button(
-                label="🌐 HTMLでダウンロード",
-                data=html_bytes,
-                file_name=f"{base_name}.html",
-                mime="text/html",
-                use_container_width=True,
-            )
+    st.subheader("💊 改善処方箋")
+    st.markdown(prescription)
 
-        st.caption(
-            "💡 ExcelファイルはGoogleスプレッドシートにアップロードして開くこともできます。"
-            "　※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。"
+    st.divider()
+
+    # ダウンロードボタン（session_stateのデータを使うため消えない）
+    date_str  = datetime.now().strftime("%Y%m%d")
+    safe_url  = re.sub(r'[^a-zA-Z0-9._-]', '_', display_url)[:40]
+    base_name = f"SEO診断書_{safe_url}_{date_str}"
+
+    excel_bytes = _build_excel(analysis, prescription, display_url)
+    html_bytes  = _build_html(analysis, prescription, display_url).encode("utf-8")
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            label="📊 Excelでダウンロード（5シート）",
+            data=excel_bytes,
+            file_name=f"{base_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
+    with dl2:
+        st.download_button(
+            label="🌐 HTMLでダウンロード",
+            data=html_bytes,
+            file_name=f"{base_name}.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+
+    st.info(
+        "💡 **Googleスプレッドシートで開く方法：**　"
+        "ExcelをダウンロードしてGoogleドライブにアップロード → ダブルクリック → 「Googleスプレッドシートで開く」\n\n"
+        "※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。"
+    )
 
 # ──────────────────────────────────────
 # 未入力時のガイド

@@ -101,6 +101,33 @@ def analyze_sc_data(df: pd.DataFrame) -> dict:
         "51位以下": int((df["position"] > 50).sum()),
     }
 
+    # 全キーワードをスコア降順で返す（Excel出力用）
+    df_sorted = df.sort_values("_score", ascending=False).copy()
+
+    def _pos_band(pos):
+        if pos <= 3:   return "1〜3位（TOP3）"
+        if pos <= 10:  return "4〜10位（1ページ目）"
+        if pos <= 20:  return "11〜20位（あと一歩）"
+        if pos <= 50:  return "21〜50位（潜在候補）"
+        return "51位以下（圏外）"
+
+    all_keywords = []
+    for _, row in df_sorted.iterrows():
+        ctr_diff = row["ctr"] - avg_ctr
+        all_keywords.append({
+            "query":        row["query"],
+            "position":     round(row["position"], 1),
+            "impressions":  int(row["impressions"]),
+            "clicks":       int(row["clicks"]),
+            "ctr":          row["ctr"],
+            "ctr_pct":      f"{row['ctr']:.1%}",
+            "avg_ctr_pct":  f"{avg_ctr:.1%}",
+            "ctr_diff_pct": f"{ctr_diff:+.1%}",
+            "ctr_status":   _ctr_status(row["ctr"], avg_ctr),
+            "pos_band":     _pos_band(row["position"]),
+            "score":        round(row["_score"], 1),
+        })
+
     return {
         "total_kw":          len(df),
         "total_clicks":      total_clicks,
@@ -109,4 +136,5 @@ def analyze_sc_data(df: pd.DataFrame) -> dict:
         "avg_position":      avg_position,
         "pos_distribution":  pos_distribution,
         "top_keywords":      keyword_entries,
+        "all_keywords":      all_keywords,
     }
