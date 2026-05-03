@@ -110,8 +110,6 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
         ("", ""),
         ("■ 検出件数", ""),
         ("分析キーワード数", f"{analysis['total_kw']:,} 件"),
-        ("リライト候補", f"{sum(1 for k in analysis['all_keywords'] if k['position'] <= 20):,} 件（1〜20位）"),
-        ("新規記事提案", f"{sum(1 for k in analysis['all_keywords'] if 20 < k['position'] <= 50):,} 件（21〜50位）"),
         ("", ""),
         ("■ パフォーマンス概況", ""),
         ("総クリック数", f"{analysis['total_clicks']:,}"),
@@ -134,7 +132,7 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
         row += 1
 
     row += 1
-    ws_summary[f"A{row}"] = "※ 各タブを順番に確認してください。まず「📋処方箋」→「① リライト候補」→「② 新規記事提案」の順で取り組んでください。"
+    ws_summary[f"A{row}"] = "※ 「📋処方箋」タブをご確認ください。AIが生成した改善提案が優先度順に記載されています。"
     ws_summary[f"A{row}"].font = Font(italic=True, color="666666", size=9)
     ws_summary.merge_cells(f"A{row}:B{row}")
 
@@ -149,16 +147,8 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
         "【このファイルの使い方】",
         "",
         "■ 📋処方箋タブ",
-        "  AIが生成した改善処方箋です。優先度の高い順に並んでいます。",
-        "  「着手状況」列をプルダウンで「対応中」「対応済み」に変更しながら進めてください。",
-        "",
-        "■ ① リライト候補タブ",
-        "  現在1〜20位に表示されているキーワードのうち、改善余地の大きいものを優先順で並べています。",
-        "  CTR差分がマイナス（平均より低い）ほど、タイトル・メタディスクリプションの改善効果が期待できます。",
-        "",
-        "■ ② 新規記事提案タブ",
-        "  21〜50位のキーワードです。1ページ目に引き上げるための新規記事や既存記事の強化候補です。",
-        "  表示回数が多いほど、記事を書いた際のインパクトが大きくなります。",
+        "  AIが生成した改善処方箋です。優先度の高い順（🔴今すぐ → 🟡今月中 → 🟢中長期）に並んでいます。",
+        "  「着手状況」列を「対応中」「対応済み」に変更しながら進めてください。",
         "",
         "【Google スプレッドシートで開く方法】",
         "  1. Google ドライブを開く（drive.google.com）",
@@ -226,138 +216,138 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
 
     ws_rx.freeze_panes = "A2"
 
-    # ════════════════════════════════
-    # シート④：リライト候補（1〜20位）
-    # ════════════════════════════════
-    ws_rw = wb.create_sheet("① リライト候補")
-
-    rw_headers = [
-        "着手状況", "順位", "クエリ", "表示回数", "クリック数",
-        "CTR", "サイト平均CTR", "CTR差分", "CTR評価", "順位帯診断",
-    ]
-    rw_widths = [12, 8, 40, 12, 12, 10, 14, 12, 14, 22]
-    _apply_header(ws_rw, rw_headers, rw_widths)
-
-    rw_data = [k for k in analysis["all_keywords"] if k["position"] <= 20]
-    low_fill  = PatternFill(start_color="FFE0E0", end_color="FFE0E0", fill_type="solid")
-    mid_fill  = PatternFill(start_color="FFFDE0", end_color="FFFDE0", fill_type="solid")
-
-    for i, kw in enumerate(rw_data, start=2):
-        row_vals = [
-            "未着手",
-            kw["position"],
-            kw["query"],
-            kw["impressions"],
-            kw["clicks"],
-            kw["ctr_pct"],
-            kw["avg_ctr_pct"],
-            kw["ctr_diff_pct"],
-            kw["ctr_status"],
-            kw["pos_band"],
-        ]
-        fill = low_fill if kw["ctr_status"] == "かなり低め" else (
-               mid_fill if kw["ctr_status"] == "やや低め" else None)
-        for col, val in enumerate(row_vals, start=1):
-            cell = ws_rw.cell(row=i, column=col, value=val)
-            cell.border = thin
-            cell.alignment = cell_align
-            if fill and col in (6, 7, 8, 9):
-                cell.fill = fill
-
-    ws_rw.freeze_panes = "A2"
-
-    # ════════════════════════════════
-    # シート⑤：新規記事提案（21〜50位）
-    # ════════════════════════════════
-    ws_new = wb.create_sheet("② 新規記事提案")
-
-    new_headers = [
-        "着手状況", "順位", "クエリ", "表示回数", "クリック数",
-        "CTR", "サイト平均CTR", "CTR差分", "CTR評価", "順位帯診断",
-    ]
-    new_widths = [12, 8, 40, 12, 12, 10, 14, 12, 14, 22]
-    _apply_header(ws_new, new_headers, new_widths)
-
-    new_data = [k for k in analysis["all_keywords"] if 20 < k["position"] <= 50]
-    for i, kw in enumerate(new_data, start=2):
-        row_vals = [
-            "未着手",
-            kw["position"],
-            kw["query"],
-            kw["impressions"],
-            kw["clicks"],
-            kw["ctr_pct"],
-            kw["avg_ctr_pct"],
-            kw["ctr_diff_pct"],
-            kw["ctr_status"],
-            kw["pos_band"],
-        ]
-        for col, val in enumerate(row_vals, start=1):
-            cell = ws_new.cell(row=i, column=col, value=val)
-            cell.border = thin
-            cell.alignment = cell_align
-
-    ws_new.freeze_panes = "A2"
-
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
+def _parse_prescription_sections(prescription: str) -> list:
+    """AI処方箋Markdownをセクションごとのdictリストに変換する"""
+    section_colors = {
+        "🔴": "#8b1a1a",
+        "🟡": "#7a5a00",
+        "🟢": "#1a5a1a",
+        "💡": "#1a3a5c",
+    }
+    sections = []
+    current = None
+
+    for line in prescription.split('\n'):
+        if line.startswith('## '):
+            if current:
+                sections.append(current)
+            title = line[3:].strip()
+            color = "#2F5496"
+            for emoji, c in section_colors.items():
+                if emoji in title:
+                    color = c
+                    break
+            current = {"title": title, "color": color, "items": [], "body_lines": []}
+        elif line.startswith('### ') and current is not None:
+            current["items"].append({"subtitle": line[4:].strip(), "lines": []})
+        elif current is not None:
+            if current["items"]:
+                current["items"][-1]["lines"].append(line)
+            else:
+                current["body_lines"].append(line)
+
+    if current:
+        sections.append(current)
+    return sections
+
+
+def _md_inline(text: str) -> str:
+    """インラインMarkdown（**太字**、*斜体*）をHTMLに変換"""
+    import html as h
+    text = h.escape(text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+    return text
+
+
 def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
     import html as html_mod
 
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 概況テーブル
     dist_rows = "".join(
         f"<tr><td>{k}</td><td>{v}件</td></tr>"
         for k, v in analysis["pos_distribution"].items()
     )
 
-    kw_rows = "".join(
-        f"<tr><td>{i}</td><td>{html_mod.escape(kw['query'])}</td>"
-        f"<td>{kw['position']}</td><td>{kw['impressions']:,}</td>"
-        f"<td>{kw['clicks']}</td><td>{kw['ctr_pct']}</td>"
-        f"<td>{kw['ctr_diff_pct']}</td><td>{kw['ctr_status']}</td></tr>"
-        for i, kw in enumerate(analysis["all_keywords"][:50], 1)
-    )
+    # 処方箋をカード形式に変換
+    sections = _parse_prescription_sections(prescription)
+    cards_html = ""
+    for sec in sections:
+        color = sec["color"]
+        items_html = ""
+        for item in sec["items"]:
+            lines_html = "".join(
+                f"<p>{_md_inline(l.lstrip('*- '))}</p>" if l.strip() else ""
+                for l in item["lines"]
+            )
+            items_html += f"""
+<div class="rx-item">
+  <div class="rx-item-title">{_md_inline(item['subtitle'])}</div>
+  <div class="rx-item-body">{lines_html}</div>
+</div>"""
+        body_html = "".join(
+            f"<p>{_md_inline(l.lstrip('*- '))}</p>" if l.strip() else ""
+            for l in sec["body_lines"]
+        )
+        cards_html += f"""
+<div class="card">
+  <div class="card-header" style="background:{color};">
+    <span class="card-title">{html_mod.escape(sec['title'])}</span>
+  </div>
+  <div class="card-body">
+    {body_html}
+    {items_html}
+  </div>
+</div>"""
 
-    md = prescription
-    md = re.sub(r'^## (.+)$', r'<h2>\1</h2>', md, flags=re.MULTILINE)
-    md = re.sub(r'^### (.+)$', r'<h3>\1</h3>', md, flags=re.MULTILINE)
-    md = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', md)
-    md = re.sub(r'\*(.+?)\*', r'<em>\1</em>', md)
-    md = re.sub(r'^---+$', '<hr>', md, flags=re.MULTILINE)
-    md = re.sub(r'^\*   (.+)$', r'<li>\1</li>', md, flags=re.MULTILINE)
-    md = md.replace('\n', '<br>\n')
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SEO診断レポート — {html_mod.escape(site_url)}</title>
+<title>SEO処方箋 詳細レポート</title>
 <style>
-  body {{ font-family: 'Hiragino Sans', 'Meiryo', sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px; color: #222; }}
-  h1 {{ color: #2F5496; border-bottom: 3px solid #2F5496; padding-bottom: 8px; }}
-  h2 {{ color: #c0392b; margin-top: 36px; border-left: 4px solid #c0392b; padding-left: 10px; }}
-  h3 {{ color: #2980b9; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 0.9em; }}
-  th {{ background: #2F5496; color: #fff; padding: 8px 12px; text-align: left; }}
-  td {{ border: 1px solid #ddd; padding: 6px 10px; }}
-  tr:nth-child(even) {{ background: #f5f8ff; }}
-  .summary-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }}
-  .metric {{ background: #f0f4ff; border-radius: 8px; padding: 12px; text-align: center; }}
-  .metric-value {{ font-size: 1.6em; font-weight: bold; color: #2F5496; }}
-  .metric-label {{ font-size: 0.82em; color: #666; }}
-  .prescription {{ background: #fff9f0; border-left: 4px solid #e67e22; padding: 16px 24px; border-radius: 4px; line-height: 1.8; }}
+  body {{
+    font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    background: #f5f7fa;
+    color: #222;
+    margin: 0;
+    padding: 20px;
+    font-size: 14px;
+    line-height: 1.7;
+  }}
+  h1 {{ font-size: 20px; color: #1a3a5c; border-bottom: 3px solid #2d7dd2; padding-bottom: 8px; margin-bottom: 6px; }}
+  .subtitle {{ color: #666; font-size: 13px; margin-bottom: 24px; }}
+  .summary-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }}
+  .metric {{ background: #fff; border-radius: 8px; padding: 14px; text-align: center; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }}
+  .metric-value {{ font-size: 1.6em; font-weight: bold; color: #1a3a5c; }}
+  .metric-label {{ font-size: 0.82em; color: #666; margin-top: 4px; }}
+  .dist-table {{ border-collapse: collapse; margin: 12px 0 24px; font-size: 13px; }}
+  .dist-table th {{ background: #2d7dd2; color: #fff; padding: 6px 16px; text-align: left; }}
+  .dist-table td {{ border: 1px solid #ddd; padding: 5px 16px; }}
+  .dist-table tr:nth-child(even) {{ background: #f5f8ff; }}
+  .card {{ background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.09); margin-bottom: 24px; overflow: hidden; }}
+  .card-header {{ color: #fff; padding: 12px 20px; }}
+  .card-title {{ font-size: 16px; font-weight: bold; }}
+  .card-body {{ padding: 16px 20px; }}
+  .card-body p {{ margin: 6px 0; }}
+  .rx-item {{ margin-bottom: 18px; padding: 12px 16px; background: #f8fbff; border-radius: 6px; border-left: 4px solid #2d7dd2; }}
+  .rx-item-title {{ font-size: 14px; font-weight: bold; color: #1a3a5c; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #d0e4f7; }}
+  .rx-item-body p {{ margin: 4px 0; font-size: 13.5px; color: #333; }}
   .footer {{ font-size: 0.8em; color: #999; margin-top: 40px; border-top: 1px solid #eee; padding-top: 12px; }}
 </style>
 </head>
 <body>
-<h1>🏥 SEO診断レポート</h1>
-<p><strong>サイト：</strong>{html_mod.escape(site_url)}　／　<strong>診断日時：</strong>{now}</p>
+<h1>📋 SEO処方箋 詳細レポート</h1>
+<p class="subtitle">対象サイト：{html_mod.escape(site_url)} ／ 診断日時：{now}</p>
 
-<h2>📊 サイト概況</h2>
 <div class="summary-grid">
   <div class="metric"><div class="metric-value">{analysis['total_kw']:,}</div><div class="metric-label">分析キーワード数</div></div>
   <div class="metric"><div class="metric-value">{analysis['avg_position']:.1f}位</div><div class="metric-label">平均掲載順位</div></div>
@@ -365,21 +355,14 @@ def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
   <div class="metric"><div class="metric-value">{analysis['total_clicks']:,}</div><div class="metric-label">総クリック数</div></div>
 </div>
 
-<h3>順位帯分布</h3>
-<table><tr><th>順位帯</th><th>件数</th></tr>{dist_rows}</table>
-
-<h2>💊 改善処方箋</h2>
-<div class="prescription">{md}</div>
-
-<h2>📋 改善対象キーワード一覧（上位50件）</h2>
-<table>
-  <tr><th>#</th><th>キーワード</th><th>順位</th><th>表示回数</th><th>クリック数</th><th>CTR</th><th>CTR差分</th><th>CTR評価</th></tr>
-  {kw_rows}
+<table class="dist-table">
+  <tr><th>順位帯</th><th>件数</th></tr>{dist_rows}
 </table>
 
+{cards_html}
+
 <div class="footer">
-  ※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。<br>
-  ※ Excelファイルはリライト候補・新規記事提案の全キーワードを含んでいます。
+  ※ この処方箋はGemini AIが生成したものです。実施前にご自身で内容をご確認ください。
 </div>
 </body>
 </html>"""
