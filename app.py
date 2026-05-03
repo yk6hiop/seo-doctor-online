@@ -504,18 +504,33 @@ with st.sidebar:
         help="Google AI Studio（aistudio.google.com）で無料取得できます",
     )
 
-    if not gemini_api_key:
-        with st.expander("🔑 APIキーの取得方法（無料）"):
-            st.markdown("""
-1. [Google AI Studio](https://aistudio.google.com/) を開く
-2. 右上 **「Get API key」** をクリック
-3. **「APIキーを作成」** → キーをコピー
-4. 上の欄に貼り付ける
+    with st.expander("🔑 APIキーの取得方法（Gmailがあれば無料）", expanded=not bool(gemini_api_key)):
+        st.markdown("""
+**Gmailアカウント（Googleアカウント）があれば無料で取得できます。**
 
-**無料枠の目安**
+**取得手順（約3分）**
+
+1. **[Google AI Studio](https://aistudio.google.com/app/apikey)** を開く
+2. Googleアカウントでログイン
+3. 左メニューまたは画面中央の **「APIキーを作成」** をクリック
+4. 「新しいプロジェクトでAPIキーを作成」を選択
+5. 生成されたキー（`AIza`で始まる文字列）を **今すぐコピーして保存**
+6. 上の入力欄に貼り付ける
+
+---
+
+⚠️ **重要：キーは作成時の1回しか表示されません**
+
+キーを閉じた後は同じキーを再表示することができません。
+メモ帳やパスワードマネージャーに保存しておいてください。
+**紛失した場合は同じ手順で新しいキーを再発行できます**（古いキーは削除してください）。
+
+---
+
+**無料枠の目安（2026年5月時点）**
 - 1日 1,500リクエストまで
 - 1分 15リクエストまで
-- 診断1回 ≒ 1リクエスト → **ほぼ無制限で使用可能**
+- 診断1回 ≒ 1リクエスト → **1日に何度でも使用可能**
 """)
 
     st.markdown("""
@@ -549,6 +564,14 @@ with st.sidebar:
 # ──────────────────────────────────────
 st.title("🏥 SEO診断ツール")
 st.caption("Search ConsoleのファイルをアップロードするだけでAIが改善処方箋を生成します（Excel・CSV対応）")
+
+if not gemini_api_key:
+    st.info(
+        "**はじめての方へ** ── Gmailアカウントがあれば **無料** で使えます。\n\n"
+        "左のサイドバー「🔑 APIキーの取得方法」を開いて、Gemini APIキーを取得してください。"
+        "取得は約3分、完全無料です。",
+        icon="👈",
+    )
 
 st.divider()
 
