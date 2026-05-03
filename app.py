@@ -19,6 +19,7 @@ from openpyxl.utils import get_column_letter
 from core.sc_parser import parse_sc_file
 from core.analyzer import analyze_sc_data
 from core.gemini_client import generate_prescription
+from core.serp import analyze_serp, analyze_serp_pages
 
 logging.basicConfig(level=logging.INFO)
 
@@ -84,7 +85,6 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
         left=Side(style="thin"), right=Side(style="thin"),
         top=Side(style="thin"),  bottom=Side(style="thin"),
     )
-    cell_align = Alignment(vertical="center", wrap_text=False)
     wrap_align = Alignment(vertical="top", wrap_text=True)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -180,12 +180,10 @@ def _build_excel(analysis: dict, prescription: str, site_url: str) -> bytes:
     ws_rx["B1"].fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
     ws_rx.row_dimensions[1].height = 24
 
-    # Markdownを除去してプレーンテキストに
     plain = re.sub(r'\*{1,3}([^\*]+)\*{1,3}', r'\1', prescription)
     plain = re.sub(r'^#{1,6}\s*', '', plain, flags=re.MULTILINE)
     plain = re.sub(r'^---+$', '─' * 60, plain, flags=re.MULTILINE)
 
-    # セクションごとに行分割して書き込む
     sections = plain.split('\n')
     data_row = 2
 
@@ -265,33 +263,127 @@ def _md_inline(text: str) -> str:
     return text
 
 
-def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
+def _find_serp_for_subtitle(subtitle: str, serp_data: dict) -> list | None:
+    """処方箋の`### subtitle`に対応するSERPデータを検索する（近似マッチ）"""
+    if not serp_data:
+        return None
+    # 鍵括弧を除去して比較
+    clean = re.sub(r'[「」【】\d\.\s]', '', subtitle).lower()
+    for kw, results in serp_data.items():
+        kw_clean = re.sub(r'\s', '', kw).lower()
+        if kw_clean in clean or clean in kw_clean:
+            return results
+    return None
+
+
+def _render_rival_titles(serp_results: list) -> str:
+    """ライバルタイトル比較セクションのHTMLを生成する（公式/ブランドを除外）"""
+    rivals = [r for r in serp_results if r.get("site_type") != "公式/ブランド"]
+    if not rivals:
+        return '<p class="no-rival-note">※ 比較対象となる一般サイトが見つかりませんでした。</p>'
+    items = ""
+    for r in rivals[:7]:
+        items += (
+            f'<li>'
+            f'<span class="rival-num-tag">{r["rank"]}位</span>'
+            f'<span class="rival-title-text">{_md_inline(r["title"][:80])}</span>'
+            f'<span class="rival-domain-note">（{r["domain"]}）</span>'
+            f'</li>'
+        )
+    return f'<ul class="rival-titles-list">{items}</ul>'
+
+
+def _render_rival_body(serp_results: list) -> str:
+    """ライバル本文の例セクションのHTMLを生成する"""
+    rivals = [r for r in serp_results
+              if r.get("site_type") != "公式/ブランド" and r.get("h2_with_snippet")]
+    if not rivals:
+        return (
+            '<div class="no-rival-note">'
+            '※ 本文データが取得できませんでした（ページアクセス制限の可能性があります）'
+            '</div>'
+        )
+    html_parts = []
+    for r in rivals[:3]:
+        h2_items = ""
+        for h2_item in r["h2_with_snippet"][:5]:
+            snippet_text = h2_item.get("snippet", "")
+            snippet_html = (
+                f'<p class="rival-snippet">{_md_inline(snippet_text[:200])}</p>'
+                if snippet_text else ""
+            )
+            h2_items += (
+                f'<div class="rival-topic">{_md_inline(h2_item["h2"][:60])}</div>'
+                f'{snippet_html}'
+            )
+        html_parts.append(
+            f'<div class="rival-block">'
+            f'<div class="rival-domain">'
+            f'<a href="{r["url"]}" target="_blank" rel="noopener">{r["domain"]}</a>'
+            f'（{r["rank"]}位）'
+            f'</div>'
+            f'{h2_items}'
+            f'</div>'
+        )
+    return "".join(html_parts)
+
+
+def _build_html(analysis: dict, prescription: str, site_url: str, serp_data: dict | None = None) -> str:
     import html as html_mod
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    serp_data = serp_data or {}
 
-    # 概況テーブル
     dist_rows = "".join(
         f"<tr><td>{k}</td><td>{v}件</td></tr>"
         for k, v in analysis["pos_distribution"].items()
     )
 
-    # 処方箋をカード形式に変換
     sections = _parse_prescription_sections(prescription)
     cards_html = ""
     for sec in sections:
         color = sec["color"]
         items_html = ""
         for item in sec["items"]:
+            # 処方箋テキスト部分
             lines_html = "".join(
                 f"<p>{_md_inline(l.lstrip('*- '))}</p>" if l.strip() else ""
                 for l in item["lines"]
             )
-            items_html += f"""
+
+            # このキーワードに対応するSERPデータを検索
+            rival_results = _find_serp_for_subtitle(item["subtitle"], serp_data)
+
+            if rival_results:
+                # 2カラムレイアウト（改善案 ＋ ライバルタイトル比較）
+                rival_titles_html = _render_rival_titles(rival_results)
+                rival_body_html = _render_rival_body(rival_results)
+                items_html += f"""
+<div class="rx-item">
+  <div class="rx-item-title">{_md_inline(item['subtitle'])}</div>
+  <div class="rx-item-grid">
+    <div class="rx-section">
+      <div class="section-title">✅ 改善案</div>
+      <div class="rx-item-body">{lines_html}</div>
+    </div>
+    <div class="rx-section">
+      <div class="section-title">🔤 ライバルタイトル比較 <span class="filter-note">※公式サイト・店舗ページは除外</span></div>
+      {rival_titles_html}
+    </div>
+  </div>
+  <div class="rx-rival-body">
+    <div class="section-title">📄 ライバル本文の例（参考）</div>
+    {rival_body_html}
+  </div>
+</div>"""
+            else:
+                # SERPデータなし（既存スタイル）
+                items_html += f"""
 <div class="rx-item">
   <div class="rx-item-title">{_md_inline(item['subtitle'])}</div>
   <div class="rx-item-body">{lines_html}</div>
 </div>"""
+
         body_html = "".join(
             f"<p>{_md_inline(l.lstrip('*- '))}</p>" if l.strip() else ""
             for l in sec["body_lines"]
@@ -337,11 +429,42 @@ def _build_html(analysis: dict, prescription: str, site_url: str) -> str:
   .card-header {{ color: #fff; padding: 12px 20px; }}
   .card-title {{ font-size: 16px; font-weight: bold; }}
   .card-body {{ padding: 16px 20px; }}
-  .card-body p {{ margin: 6px 0; }}
-  .rx-item {{ margin-bottom: 18px; padding: 12px 16px; background: #f8fbff; border-radius: 6px; border-left: 4px solid #2d7dd2; }}
-  .rx-item-title {{ font-size: 14px; font-weight: bold; color: #1a3a5c; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #d0e4f7; }}
+  .card-body > p {{ margin: 6px 0; }}
+  /* キーワードカード */
+  .rx-item {{ margin-bottom: 20px; border-radius: 6px; border: 1px solid #dce6f4; overflow: hidden; }}
+  .rx-item-title {{ font-size: 14px; font-weight: bold; color: #fff; background: #2d7dd2; margin: 0; padding: 9px 16px; }}
+  /* SERPあり: 2カラムグリッド */
+  .rx-item-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0; }}
+  .rx-section {{ padding: 14px 16px; }}
+  .rx-section + .rx-section {{ border-left: 1px solid #e0eaf5; }}
   .rx-item-body p {{ margin: 4px 0; font-size: 13.5px; color: #333; }}
+  /* SERPなし: 既存スタイル */
+  .rx-item > .rx-item-body {{ padding: 12px 16px; background: #f8fbff; }}
+  .rx-item > .rx-item-body p {{ margin: 4px 0; font-size: 13.5px; color: #333; }}
+  /* セクションタイトル */
+  .section-title {{ font-size: 13px; font-weight: bold; color: #2d7dd2; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #d0e4f7; letter-spacing: 0.03em; }}
+  .filter-note {{ font-size: 11px; font-weight: normal; color: #999; margin-left: 6px; }}
+  /* ライバルタイトルリスト */
+  .rival-titles-list {{ list-style: none; padding: 0; margin: 0; }}
+  .rival-titles-list li {{ margin-bottom: 6px; font-size: 13px; padding: 5px 8px; background: #f9f9f9; border: 1px solid #e8e8e8; border-radius: 4px; }}
+  .rival-num-tag {{ display: inline-block; background: #2d7dd2; color: #fff; font-weight: bold; font-size: 11px; padding: 1px 7px; border-radius: 10px; margin-right: 6px; }}
+  .rival-title-text {{ color: #334; }}
+  .rival-domain-note {{ font-size: 11px; color: #888; margin-left: 4px; }}
+  /* ライバル本文の例 */
+  .rx-rival-body {{ padding: 14px 16px; background: #fdfaf3; border-top: 1px solid #e0eaf5; }}
+  .rival-block {{ margin-bottom: 16px; }}
+  .rival-domain {{ font-size: 11.5px; color: #888; margin-bottom: 6px; }}
+  .rival-domain a {{ color: #2d7dd2; text-decoration: none; }}
+  .rival-domain a:hover {{ text-decoration: underline; }}
+  .rival-topic {{ font-size: 12px; font-weight: bold; background: #fff3cd; border-left: 3px solid #e6a817; padding: 4px 8px; margin-bottom: 4px; border-radius: 0 4px 4px 0; }}
+  .rival-snippet {{ font-size: 11.5px; color: #555; background: #fffaf0; border-left: 2px solid #e6a817; padding: 4px 8px; margin-bottom: 6px; border-radius: 0 3px 3px 0; }}
+  .no-rival-note {{ color: #999; font-size: 12px; font-style: italic; }}
   .footer {{ font-size: 0.8em; color: #999; margin-top: 40px; border-top: 1px solid #eee; padding-top: 12px; }}
+  @media (max-width: 800px) {{
+    .rx-item-grid {{ grid-template-columns: 1fr; }}
+    .rx-section + .rx-section {{ border-left: none; border-top: 1px solid #e0eaf5; }}
+    .summary-grid {{ grid-template-columns: repeat(2, 1fr); }}
+  }}
 </style>
 </head>
 <body>
@@ -473,17 +596,33 @@ if ready:
         with st.spinner("🔬 データを分析中..."):
             analysis = analyze_sc_data(df)
 
-        with st.spinner("💊 AIが処方箋を作成中です...（30秒〜1分かかります）"):
+        # ── SERP スクレイピング ──
+        serp_data: dict = {}
+        target_kws = [kw["query"] for kw in analysis["top_keywords"][:10]]
+
+        serp_progress = st.progress(0, text="🔍 ライバルサイトを調査中...")
+        for i, kw in enumerate(target_kws):
+            serp_progress.progress(
+                (i + 1) / len(target_kws),
+                text=f"🔍 ライバル調査中 ({i+1}/{len(target_kws)})：「{kw}」",
+            )
+            results = analyze_serp(kw)
+            analyze_serp_pages(results, max_pages=5)
+            serp_data[kw] = results
+        serp_progress.empty()
+
+        with st.spinner("💊 AIが処方箋を作成中です...（30秒〜2分かかります）"):
             prescription = generate_prescription(
                 api_key=gemini_api_key,
                 analysis=analysis,
                 site_url=site_url or "（URL未入力）",
+                serp_data=serp_data,
             )
 
-        # session_stateに保存（ダウンロードボタンが消えないようにするため）
         st.session_state["analysis"]     = analysis
         st.session_state["prescription"] = prescription
         st.session_state["site_url"]     = site_url or "（URL未入力）"
+        st.session_state["serp_data"]    = serp_data
 
 # ──────────────────────────────────────
 # 診断結果の表示（session_stateから読む）
@@ -492,6 +631,7 @@ if "prescription" in st.session_state:
     analysis     = st.session_state["analysis"]
     prescription = st.session_state["prescription"]
     display_url  = st.session_state["site_url"]
+    serp_data    = st.session_state.get("serp_data", {})
 
     st.subheader("📊 サイト概況")
     m1, m2, m3, m4 = st.columns(4)
@@ -513,18 +653,17 @@ if "prescription" in st.session_state:
 
     st.divider()
 
-    # ダウンロードボタン（session_stateのデータを使うため消えない）
     date_str  = datetime.now().strftime("%Y%m%d")
     safe_url  = re.sub(r'[^a-zA-Z0-9._-]', '_', display_url)[:40]
     base_name = f"SEO診断書_{safe_url}_{date_str}"
 
     excel_bytes = _build_excel(analysis, prescription, display_url)
-    html_bytes  = _build_html(analysis, prescription, display_url).encode("utf-8")
+    html_bytes  = _build_html(analysis, prescription, display_url, serp_data).encode("utf-8")
 
     dl1, dl2 = st.columns(2)
     with dl1:
         st.download_button(
-            label="📊 Excelでダウンロード（5シート）",
+            label="📊 Excelでダウンロード（3シート）",
             data=excel_bytes,
             file_name=f"{base_name}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

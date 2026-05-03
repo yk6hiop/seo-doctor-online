@@ -35,7 +35,28 @@ def _redact_key(text: str, api_key: str) -> str:
     return text
 
 
-def _build_prompt(analysis: dict, site_url: str) -> str:
+def _build_serp_context(serp_data: dict) -> str:
+    """SERPデータをプロンプト用テキストに変換する"""
+    if not serp_data:
+        return ""
+    lines = ["\n【ライバルサイト分析データ（Yahoo検索上位結果）】"]
+    for kw, results in serp_data.items():
+        if not results:
+            continue
+        lines.append(f"\n▼「{kw}」の上位結果")
+        for r in results:
+            if r.get("site_type") == "公式/ブランド":
+                continue
+            h2s = r.get("h2_with_snippet", [])
+            h2_summary = "　".join(h["h2"] for h in h2s[:3]) if h2s else "（取得不可）"
+            lines.append(
+                f"  {r['rank']}位 [{r['domain']}] {r['title'][:60]}"
+                f"\n       主なH2: {h2_summary}"
+            )
+    return "\n".join(lines)
+
+
+def _build_prompt(analysis: dict, site_url: str, serp_data: dict | None = None) -> str:
     """Gemini送信用プロンプトを構築する"""
     dist = analysis["pos_distribution"]
     dist_text = "　".join(f"{k} {v}件" for k, v in dist.items())
@@ -50,6 +71,8 @@ def _build_prompt(analysis: dict, site_url: str) -> str:
             f"　CTR {kw['ctr_pct']}（{kw['ctr_status']}）"
         )
 
+    serp_context = _build_serp_context(serp_data or {})
+
     prompt = f"""あなたは日本の上位SEOコンサルタントです。
 以下のSearch Consoleデータを分析し、サイトオーナーが今すぐ実行できる具体的な改善処方箋を作成してください。
 
@@ -63,7 +86,7 @@ URL: {site_url}
 順位帯分布: {dist_text}
 
 【改善余地の大きいキーワード（優先度順・上位{len(kw_lines)}件）】
-{chr(10).join(kw_lines)}
+{chr(10).join(kw_lines)}{serp_context}
 
 ---
 
@@ -94,7 +117,12 @@ URL: {site_url}
     return prompt
 
 
-def generate_prescription(api_key: str, analysis: dict, site_url: str) -> str:
+def generate_prescription(
+    api_key: str,
+    analysis: dict,
+    site_url: str,
+    serp_data: dict | None = None,
+) -> str:
     """
     Gemini APIで処方箋テキストを生成する。
 
@@ -102,13 +130,14 @@ def generate_prescription(api_key: str, analysis: dict, site_url: str) -> str:
         api_key: ユーザーのGemini APIキー（ログに絶対書かない）
         analysis: analyze_sc_data()の戻り値
         site_url: サイトURL（プロンプト表示用）
+        serp_data: {keyword: [serp_result, ...]} （オプション）
 
     Returns:
         Markdownフォーマットの処方箋テキスト
     """
     try:
         client = genai.Client(api_key=api_key)
-        prompt = _build_prompt(analysis, _sanitize_url(site_url))
+        prompt = _build_prompt(analysis, _sanitize_url(site_url), serp_data)
         response = client.models.generate_content(
             model=_MODEL,
             contents=prompt,
