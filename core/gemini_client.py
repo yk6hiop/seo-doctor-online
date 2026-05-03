@@ -8,6 +8,7 @@ Gemini API クライアント
   - プロンプトの長さ上限を設ける（巨大プロンプトによる誤作動防止）。
 """
 
+import json
 import logging
 import re
 from google import genai
@@ -19,13 +20,13 @@ def _sanitize_url(url: str) -> str:
     """サイトURLをサニタイズ（プロンプトインジェクション対策）"""
     url = url.strip()[:200]
     url = re.sub(r"[\x00-\x1f\x7f\n\r]", "", url)
-    # httpsかhttpで始まらないURLは安全のためマスク
     if url and not re.match(r"^https?://", url, re.IGNORECASE):
         return "（URL省略）"
     return url or "（URL未入力）"
 
+
 _MODEL          = "gemini-3-flash-preview"
-_MAX_PROMPT_LEN = 20_000   # プロンプト文字数上限
+_MAX_PROMPT_LEN = 25_000
 
 
 def _redact_key(text: str, api_key: str) -> str:
@@ -35,135 +36,167 @@ def _redact_key(text: str, api_key: str) -> str:
     return text
 
 
-def _build_serp_context(serp_data: dict) -> str:
-    """SERPデータをプロンプト用テキストに変換する"""
-    if not serp_data:
-        return ""
-    lines = ["\n【ライバルサイト分析データ（Yahoo検索上位結果）】"]
-    for kw, results in serp_data.items():
-        if not results:
-            continue
-        lines.append(f"\n▼「{kw}」の上位結果")
-        for r in results:
-            if r.get("site_type") == "公式/ブランド":
-                continue
-            h2s = r.get("h2_with_snippet", [])
-            h2_summary = "　".join(h["h2"] for h in h2s[:3]) if h2s else "（取得不可）"
-            lines.append(
-                f"  {r['rank']}位 [{r['domain']}] {r['title'][:60]}"
-                f"\n       主なH2: {h2_summary}"
-            )
-    return "\n".join(lines)
+def _handle_api_error(e: Exception, api_key: str) -> str:
+    """API例外を日本語エラーメッセージに変換する"""
+    raw_msg = str(e)
+    safe_msg = _redact_key(raw_msg, api_key)
+    logger.error("Gemini API エラー: %s", safe_msg)
+    msg = raw_msg.upper()
+    if "API_KEY" in msg or "INVALID" in msg or "PERMISSION" in msg:
+        return "APIキーエラー"
+    if "QUOTA" in msg or "RATE" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "クォータ超過"
+    return f"エラー: {safe_msg}"
 
 
-def _build_prompt(analysis: dict, site_url: str, serp_data: dict | None = None) -> str:
-    """Gemini送信用プロンプトを構築する"""
-    dist = analysis["pos_distribution"]
-    dist_text = "　".join(f"{k} {v}件" for k, v in dist.items())
+# ──────────────────────────────────────
+# キーワード別構造化JSON処方箋
+# ──────────────────────────────────────
 
-    kw_lines = []
-    for i, kw in enumerate(analysis["top_keywords"], 1):
-        kw_lines.append(
-            f"{i:2}. 「{kw['query']}」"
-            f"　{kw['position']}位"
-            f"　表示{kw['impressions']:,}回"
-            f"　クリック{kw['clicks']}回"
-            f"　CTR {kw['ctr_pct']}（{kw['ctr_status']}）"
+def _build_structured_prompt(
+    top_keywords: list[dict],
+    serp_data: dict,
+    avg_ctr: float,
+    site_url: str,
+) -> str:
+    """キーワードごとの構造化JSON改善提案プロンプトを構築する"""
+
+    kw_blocks = []
+    for i, kw in enumerate(top_keywords, 1):
+        q = kw["query"]
+        rivals = serp_data.get(q, [])
+        rival_general = [r for r in rivals if r.get("site_type") != "公式/ブランド"]
+
+        rival_titles_lines = "\n   ".join(
+            f"SERP{r['rank']}位: {r['title'][:70]}"
+            for r in rival_general[:5]
+        ) or "（データなし）"
+
+        all_h2s = []
+        for r in rival_general[:3]:
+            for h2_item in r.get("h2_with_snippet", [])[:4]:
+                all_h2s.append(h2_item["h2"][:40])
+        h2_text = "、".join(all_h2s[:6]) if all_h2s else "（データなし）"
+
+        kw_blocks.append(
+            f"{i}. 「{q}」\n"
+            f"   順位:{kw['position']}位 / 表示:{kw['impressions']:,}回 / "
+            f"クリック:{kw['clicks']}回 / CTR:{kw['ctr_pct']}（サイト平均比:{kw['ctr_status']}）\n"
+            f"   ライバル上位タイトル:\n   {rival_titles_lines}\n"
+            f"   ライバルH2見出し例: {h2_text}"
         )
 
-    serp_context = _build_serp_context(serp_data or {})
+    kw_text = "\n\n".join(kw_blocks)
 
     prompt = f"""あなたは日本の上位SEOコンサルタントです。
-以下のSearch Consoleデータを分析し、サイトオーナーが今すぐ実行できる具体的な改善処方箋を作成してください。
+以下のSearch ConsoleデータとSERP分析データを元に、各キーワードの改善提案をJSON形式で出力してください。
+
+【絶対遵守】
+- JSONのみを返すこと
+- ```json などのコードブロック記号は使わない
+- 前置き・後書き・説明文は一切不要
+- 各キーワードにつき2〜4個のアクションを提案すること
+
+【出力スキーマ（厳守）】
+{{
+  "site_summary": "サイト全体の課題と方向性（2〜3文）",
+  "keywords": [
+    {{
+      "query": "キーワード名（上のデータと完全一致）",
+      "level": "Lv5",
+      "priority_label": "🔴今すぐ取り組む",
+      "actions": [
+        {{
+          "todo": "タイトル改善",
+          "marker": "★",
+          "evidence_type": "title",
+          "evidence": "根拠（50字以内・具体的数値含む）",
+          "action": "具体的な改善アクション（100字以内）"
+        }}
+      ]
+    }}
+  ]
+}}
+
+【フィールド定義】
+- level: Lv5=最優先（今週中）/ Lv4=高（今月中）/ Lv3=中（中長期）
+- priority_label: "🔴今すぐ取り組む" | "🟡今月中に取り組む" | "🟢中長期で取り組む"
+- todo: 「タイトル改善」「本文深掘り」「UX改善」「内部リンク」「構造化データ」のいずれか
+- evidence_type: "title"（タイトル起因）| "serp"（SERP差分）| "rank"（順位起因）| "ctr"（CTR起因）
+- marker: "★"（最重要）| "●"（重要）| "◆"（推奨）
 
 【サイト情報】
 URL: {site_url}
-分析キーワード数: {analysis['total_kw']:,}件
-総クリック数: {analysis['total_clicks']:,}
-総表示回数: {analysis['total_impressions']:,}
-全体CTR: {analysis['avg_ctr']:.1%}
-加重平均掲載順位: {analysis['avg_position']:.1f}位
-順位帯分布: {dist_text}
+サイト全体CTR: {avg_ctr:.1%}
 
-【改善余地の大きいキーワード（優先度順・上位{len(kw_lines)}件）】
-{chr(10).join(kw_lines)}{serp_context}
-
----
-
-以下の形式で処方箋を出力してください。
-- 各提案は「キーワード名」を必ず明記すること
-- 「現状の課題」と「具体的な改善アクション」を含めること
-- 専門用語は最小限にし、サイトオーナーが自分で実行できる粒度で書くこと
-- 数字や根拠を使って説得力を持たせること
-
-## 🔴 今すぐ取り組む（今週中）
-（表示回数は多いがCTRが低いキーワード、あと一歩で1ページ目のキーワードを中心に3〜5件）
-
-## 🟡 今月中に取り組む
-（コンテンツ強化・内部リンク改善が効くキーワードを3〜5件）
-
-## 🟢 中長期で取り組む
-（現在圏外〜2ページ目だが将来性のあるキーワードを2〜3件）
-
-## 💡 サイト全体への提言
-（データ全体から読み取れるサイトの課題と方向性を2〜3点）
+【キーワードデータ（優先度順）】
+{kw_text}
 """
 
-    # プロンプト長の安全チェック
     if len(prompt) > _MAX_PROMPT_LEN:
-        logger.warning("プロンプトが上限を超えたため切り詰めます")
+        logger.warning("構造化プロンプトが上限を超えたため切り詰めます")
         prompt = prompt[:_MAX_PROMPT_LEN]
 
     return prompt
 
 
-def generate_prescription(
+def generate_keyword_prescriptions(
     api_key: str,
-    analysis: dict,
+    top_keywords: list[dict],
+    serp_data: dict,
+    avg_ctr: float,
     site_url: str,
-    serp_data: dict | None = None,
-) -> str:
+) -> dict:
     """
-    Gemini APIで処方箋テキストを生成する。
-
-    Args:
-        api_key: ユーザーのGemini APIキー（ログに絶対書かない）
-        analysis: analyze_sc_data()の戻り値
-        site_url: サイトURL（プロンプト表示用）
-        serp_data: {keyword: [serp_result, ...]} （オプション）
+    各キーワードの改善提案をJSON形式で生成する。
 
     Returns:
-        Markdownフォーマットの処方箋テキスト
+        {
+            "site_summary": str,
+            "keywords": [
+                {
+                    "query": str,
+                    "level": str,
+                    "priority_label": str,
+                    "actions": [{todo, marker, evidence_type, evidence, action}]
+                }, ...
+            ],
+            "error": str | None,
+        }
     """
+    empty = {"site_summary": "", "keywords": [], "error": None}
+
     try:
         client = genai.Client(api_key=api_key)
-        prompt = _build_prompt(analysis, _sanitize_url(site_url), serp_data)
-        response = client.models.generate_content(
-            model=_MODEL,
-            contents=prompt,
-        )
-        return response.text
+        prompt = _build_structured_prompt(top_keywords, serp_data, avg_ctr, _sanitize_url(site_url))
+        response = client.models.generate_content(model=_MODEL, contents=prompt)
+        raw = (response.text or "").strip()
+
+        # コードブロックを除去
+        raw = re.sub(r'^```(?:json)?\s*', '', raw)
+        raw = re.sub(r'\s*```\s*$', '', raw)
+        raw = raw.strip()
+
+        data = json.loads(raw)
+
+        if isinstance(data, dict):
+            return {
+                "site_summary": data.get("site_summary", ""),
+                "keywords": data.get("keywords", []),
+                "error": None,
+            }
+        if isinstance(data, list):
+            return {"site_summary": "", "keywords": data, "error": None}
+
+        empty["error"] = "予期しないJSON形式"
+        return empty
+
+    except json.JSONDecodeError as e:
+        logger.error("JSON解析エラー（生テキスト）: %s", e)
+        empty["error"] = f"JSON解析失敗: {e}"
+        return empty
 
     except Exception as e:
-        raw_msg = str(e)
-        safe_msg = _redact_key(raw_msg, api_key)   # APIキーをマスク
-        logger.error("Gemini API エラー: %s", safe_msg)
-
-        msg = raw_msg.upper()
-        if "API_KEY" in msg or "INVALID" in msg or "PERMISSION" in msg:
-            return (
-                "⚠️ **APIキーが無効です**\n\n"
-                "Gemini APIキーを確認してください。\n"
-                "👉 [Google AI Studio](https://aistudio.google.com/) でキーを確認・再発行できます。"
-            )
-        if "QUOTA" in msg or "RATE" in msg or "RESOURCE_EXHAUSTED" in msg:
-            return (
-                "⚠️ **APIの利用制限に達しました**\n\n"
-                "しばらく待ってから再度お試しください。\n"
-                "無料枠の上限: 1日1,500リクエスト / 1分15リクエスト"
-            )
-        return (
-            f"⚠️ **処方箋の生成に失敗しました**\n\n"
-            f"エラー内容: {safe_msg}\n\n"
-            "APIキーが正しいか、インターネット接続を確認してください。"
-        )
+        err = _handle_api_error(e, api_key)
+        empty["error"] = err
+        return empty
