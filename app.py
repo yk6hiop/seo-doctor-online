@@ -108,6 +108,17 @@ st.divider()
 
 col_upload, col_url = st.columns([3, 2])
 
+def _extract_url_from_filename(name: str) -> str:
+    """SCエクスポートのファイル名からサイトURLを抽出する"""
+    import re
+    stem = re.sub(r'\.(xlsx|csv)$', '', name, flags=re.IGNORECASE)
+    # ファイル名形式: https___example.com_-Performance-on-Search-...
+    # "_-" がドメインと残りの区切り
+    m = re.match(r'^(https?___[^_]+(?:_[^-][^_]*)*?)(?=_-|$)', stem)
+    if m:
+        return m.group(1).replace('___', '://')
+    return ""
+
 with col_upload:
     uploaded_file = st.file_uploader(
         "📂 Search Consoleファイルをアップロード",
@@ -119,10 +130,12 @@ with col_upload:
         st.caption(f"✅ ファイル受信: {uploaded_file.name}")
 
 with col_url:
+    auto_url = _extract_url_from_filename(uploaded_file.name) if uploaded_file else ""
     site_url = st.text_input(
         "🌐 サイトURL（任意）",
+        value=auto_url,
         placeholder="https://example-blog.com",
-        help="処方箋のレポートに表示されます。入力は任意です。",
+        help="ファイル名から自動取得します。変更も可能です。",
     )
 
 st.divider()
