@@ -24,7 +24,7 @@ def _sanitize_url(url: str) -> str:
         return "（URL省略）"
     return url or "（URL未入力）"
 
-_MODEL          = "gemini-2.0-flash"
+_MODEL          = "gemini-3-flash-preview"
 _MAX_PROMPT_LEN = 20_000   # プロンプト文字数上限
 
 
